@@ -1,0 +1,12 @@
+nimTitle	common	zippy/common.html	module zippy/common		0
+nim	ZippyError	zippy/common.html#ZippyError	object ZippyError		2
+nim	dfDetect	zippy/common.html#dfDetect	CompressedDataFormat.dfDetect		4
+nim	dfZlib	zippy/common.html#dfZlib	CompressedDataFormat.dfZlib		4
+nim	dfGzip	zippy/common.html#dfGzip	CompressedDataFormat.dfGzip		4
+nim	dfDeflate	zippy/common.html#dfDeflate	CompressedDataFormat.dfDeflate		4
+nim	CompressedDataFormat	zippy/common.html#CompressedDataFormat	enum CompressedDataFormat		4
+nim	NoCompression	zippy/common.html#NoCompression	const NoCompression		8
+nim	BestSpeed	zippy/common.html#BestSpeed	const BestSpeed		9
+nim	BestCompression	zippy/common.html#BestCompression	const BestCompression		10
+nim	DefaultCompression	zippy/common.html#DefaultCompression	const DefaultCompression		11
+nim	HuffmanOnly	zippy/common.html#HuffmanOnly	const HuffmanOnly		12
