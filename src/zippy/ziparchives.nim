@@ -1,4 +1,4 @@
-import common, crc, internal, std/memfiles, std/os, std/strutils, std/tables,
+import common, crc, inflate, internal, std/memfiles, std/os, std/strutils, std/tables,
     std/times, std/unicode, ziparchives_v1, zippy, std/sequtils
 
 export common, ziparchives_v1
@@ -37,9 +37,11 @@ iterator walkFiles*(reader: ZipArchiveReader): string =
       yield record.path
 
 proc extractFile*(
-  reader: ZipArchiveReader, path: string
+  reader: ZipArchiveReader, path: string, maxOutputLen = int.high - 16
 ): string {.raises: [ZippyError].} =
-
+  ## Limits actual decoded bytes; ZIP size fields are not trusted as a bound.
+  if maxOutputLen < 0 or maxOutputLen > int.high - 16:
+    raise newException(ZippyError, "Invalid output limit")
   template failNoFileRecord() =
     raise newException(ZippyError, "No file record found for " & path)
 
@@ -50,6 +52,9 @@ proc extractFile*(
         reader.records[path]
       except KeyError:
         failNoFileRecord()
+
+  if record.uncompressedSize > maxOutputLen:
+    raise newException(ZippyError, "Uncompressed data exceeds output limit")
 
   var pos = record.fileHeaderOffset
 
@@ -79,11 +84,13 @@ proc extractFile*(
   case record.kind:
   of FileRecord:
     if compressionMethod == 0: # No compression
+      if record.compressedSize > maxOutputLen:
+        raise newException(ZippyError, "Uncompressed data exceeds output limit")
       if record.compressedSize > 0:
         result.setLen(record.compressedSize)
         copyMem(result[0].addr, src[pos].addr, record.compressedSize)
     elif compressionMethod == 8: # Deflate
-      result = uncompress(src[pos].addr, record.compressedSize, dfDeflate)
+      inflate(result, cast[ptr UncheckedArray[uint8]](src[pos].addr), record.compressedSize, 0, maxOutputLen)
     else:
       raise newException(ZippyError, "Unsupported archive, compression method")
   of DirectoryRecord:
