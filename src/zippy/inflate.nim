@@ -293,147 +293,142 @@ proc inflate*(dst: var string, src: ptr UncheckedArray[uint8], len, pos: int) =
 proc inflateSize*(
   src: ptr UncheckedArray[uint8],
   len: int
-): int {.raises: [].} =
-  ## Counts decoded bytes; returns -1 for invalid input or size overflow.
-  ## Does not allocate output or verify a checksum.
+): int {.raises: [ZippyError].} =
+  ## Counts decoded bytes without allocating output or checking a checksum.
   if len < 0 or (src == nil and len > 0):
-    return -1
-  try:
-    var b = BitStreamReader(src: src, len: len)
-    while true:
+    raise newException(ZippyError, "Invalid size scan arguments")
+  var b = BitStreamReader(src: src, len: len)
+  while true:
+    let
+      finalBlock = b.readBits(1) != 0
+      kind = b.readBits(2)
+    if b.bitsBuffered < 0:
+      failEndOfBuffer()
+    case kind
+    of 0:
+      b.skipRemainingBitsInCurrentByte()
       let
-        finalBlock = b.readBits(1) != 0
-        kind = b.readBits(2)
+        count = b.readBits(16).int
+        complement = b.readBits(16).int
       if b.bitsBuffered < 0:
-        return -1
-      case kind
-      of 0:
-        b.skipRemainingBitsInCurrentByte()
+        failEndOfBuffer()
+      if count + complement != 65535:
+        failUncompress()
+      let start = b.pos - b.bitsBuffered div 8
+      if count > b.len - start:
+        failEndOfBuffer()
+      if count > int.high - result:
+        raise newException(ZippyError, "Uncompressed size overflows int")
+      result += count
+      b.pos = start + count
+      b.bitsBuffered = 0
+      b.bitBuffer = 0
+    of 1, 2:
+      var literalsHuffman, distancesHuffman: Huffman
+      if kind == 1:
+        literalsHuffman = initHuffman(fixedLitLenCodeLengths)
+        distancesHuffman = initHuffman(fixedDistanceCodeLengths)
+      else:
         let
-          count = b.readBits(16).int
-          complement = b.readBits(16).int
+          hlit = b.readBits(5).int + 257
+          hdist = b.readBits(5).int + 1
+          hclen = b.readBits(4).int + 4
+
         if b.bitsBuffered < 0:
-          return -1
-        if count + complement != 65535:
-          return -1
-        let start = b.pos - b.bitsBuffered div 8
-        if count > b.len - start:
-          return -1
-        if count > int.high - result:
-          return -1
-        result += count
-        b.pos = start + count
-        b.bitsBuffered = 0
-        b.bitBuffer = 0
-      of 1, 2:
-        var literalsHuffman, distancesHuffman: Huffman
-        if kind == 1:
-          literalsHuffman = initHuffman(fixedLitLenCodeLengths)
-          distancesHuffman = initHuffman(fixedDistanceCodeLengths)
-        else:
-          let
-            hlit = b.readBits(5).int + 257
-            hdist = b.readBits(5).int + 1
-            hclen = b.readBits(4).int + 4
+          failEndOfBuffer()
+        if hlit > maxLitLenCodes:
+          failUncompress()
 
+        if hdist > maxDistanceCodes:
+          failUncompress()
+
+        var clcls: array[19, uint8]
+        for i in 0 ..< hclen:
+          clcls[clclOrder[i]] = b.readBits(3).uint8
           if b.bitsBuffered < 0:
-            return -1
-          if hlit > maxLitLenCodes:
-            return -1
+            failEndOfBuffer()
 
-          if hdist > maxDistanceCodes:
-            return -1
+        let clclsHuffman = initHuffman(clcls)
 
-          var clcls: array[19, uint8]
-          for i in 0 ..< hclen:
-            clcls[clclOrder[i]] = b.readBits(3).uint8
-            if b.bitsBuffered < 0:
-              return -1
+        # Literal and distance lengths form one sequence (RFC 1951).
 
-          let clclsHuffman = initHuffman(clcls)
-
-          # Literal and distance lengths form one sequence (RFC 1951).
-
-          var
-            unpacked: array[320, uint8]
-            i: int
-          while i != hlit + hdist:
-            if b.bitsBuffered < 15:
-              b.fillBitBuffer()
-            let symbol = decodeSymbol(b, clclsHuffman)
-            if b.bitsBuffered < 0:
-              return -1
-            if symbol <= 15:
-              unpacked[i] = symbol.uint8
-              inc i
-            elif symbol == 16:
-              if i == 0:
-                return -1
-              let
-                prev = unpacked[i - 1]
-                repeatCount = b.readBits(2).int + 3
-              if i + repeatCount > unpacked.len:
-                return -1
-              for _ in 0 ..< repeatCount:
-                unpacked[i] = prev
-                inc i
-            elif symbol == 17:
-              let repeatZeroCount = b.readBits(3).int + 3
-              i += repeatZeroCount
-            elif symbol == 18:
-              let repeatZeroCount = b.readBits(7).int + 11
-              i += repeatZeroCount
-            else:
-              return -1
-
-            if b.bitsBuffered < 0:
-              return -1
-            if i > hlit + hdist:
-              return -1
-
-          literalsHuffman = initHuffman(unpacked.toOpenArray(0, hlit - 1))
-          distancesHuffman = initHuffman(unpacked.toOpenArray(hlit, hlit + hdist - 1))
-        while true:
+        var
+          unpacked: array[320, uint8]
+          i: int
+        while i != hlit + hdist:
           if b.bitsBuffered < 15:
             b.fillBitBuffer()
-          let symbol = decodeSymbol(b, literalsHuffman)
+          let symbol = decodeSymbol(b, clclsHuffman)
           if b.bitsBuffered < 0:
-            return -1
-          var count = 1
-          if symbol == 256:
-            break
-          if symbol > 256:
-            let index = (symbol - 257).int
-            if index >= baseLengths.len:
-              return -1
+            failEndOfBuffer()
+          if symbol <= 15:
+            unpacked[i] = symbol.uint8
+            inc i
+          elif symbol == 16:
+            if i == 0:
+              failUncompress()
+            let
+              prev = unpacked[i - 1]
+              repeatCount = b.readBits(2).int + 3
+            if i + repeatCount > unpacked.len:
+              failUncompress()
+            for _ in 0 ..< repeatCount:
+              unpacked[i] = prev
+              inc i
+          elif symbol == 17:
+            let repeatZeroCount = b.readBits(3).int + 3
+            i += repeatZeroCount
+          elif symbol == 18:
+            let repeatZeroCount = b.readBits(7).int + 11
+            i += repeatZeroCount
+          else:
+            raise newException(ZippyError, "Invalid symbol")
+
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          if i > hlit + hdist:
+            failUncompress()
+
+        literalsHuffman = initHuffman(unpacked.toOpenArray(0, hlit - 1))
+        distancesHuffman = initHuffman(unpacked.toOpenArray(hlit, hlit + hdist - 1))
+      while true:
+        if b.bitsBuffered < 15:
+          b.fillBitBuffer()
+        let symbol = decodeSymbol(b, literalsHuffman)
+        if b.bitsBuffered < 0:
+          failEndOfBuffer()
+        var count = 1
+        if symbol == 256:
+          break
+        if symbol > 256:
+          let index = (symbol - 257).int
+          if index >= baseLengths.len:
+            failUncompress()
+          b.fillBitBuffer()
+          count = baseLengths[index].int +
+            b.readBits(baseLengthsExtraBits[index].int, false).int
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          let distanceIndex = decodeSymbol(b, distancesHuffman).int
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          if distanceIndex >= baseDistances.len:
+            failUncompress()
+          if b.bitsBuffered < 13:
             b.fillBitBuffer()
-            count = baseLengths[index].int +
-              b.readBits(baseLengthsExtraBits[index].int, false).int
-            if b.bitsBuffered < 0:
-              return -1
-            let distanceIndex = decodeSymbol(b, distancesHuffman).int
-            if b.bitsBuffered < 0:
-              return -1
-            if distanceIndex >= baseDistances.len:
-              return -1
-            if b.bitsBuffered < 13:
-              b.fillBitBuffer()
-            let distance = baseDistances[distanceIndex].int +
-              b.readBits(baseDistanceExtraBits[distanceIndex].int, false).int
-            if b.bitsBuffered < 0:
-              return -1
-            if distance > result:
-              return -1
-          if count > int.high - result:
-            return -1
-          result += count
-      else:
-        return -1
-      if finalBlock:
-        break
-  except ZippyError:
-    # The shared Huffman table builder can reject malformed code lengths.
-    return -1
+          let distance = baseDistances[distanceIndex].int +
+            b.readBits(baseDistanceExtraBits[distanceIndex].int, false).int
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          if distance > result:
+            failUncompress()
+        if count > int.high - result:
+          raise newException(ZippyError, "Uncompressed size overflows int")
+        result += count
+    else:
+      raise newException(ZippyError, "Invalid block header")
+    if finalBlock:
+      break
 
 when defined(release):
   {.pop.}
