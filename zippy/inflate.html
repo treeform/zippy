@@ -62,7 +62,9 @@
     <summary><a class="reference reference-toplevel" href="#12" id="62">Procs</a></summary>
     <ul class="simple simple-toc-section">
       <ul class="simple nested-toc-section">inflate
-  <li><a class="reference" href="#inflate%2Cstring%2Cptr.UncheckedArray%5Buint8%5D%2Cint%2Cint" title="inflate(dst: var string; src: ptr UncheckedArray[uint8]; len, pos: int)">inflate(dst: var string; src: ptr UncheckedArray[uint8]; len, pos: int)</a></li>
+  <li><a class="reference" href="#inflate%2Cstring%2Cptr.UncheckedArray%5Buint8%5D%2Cint%2Cint" title="inflate(dst: var string; src: ptr UncheckedArray[uint8]; len: int; pos: int;
+        maxOutputLen = high(int) - 16)">inflate(dst: var string; src: ptr UncheckedArray[uint8]; len: int; pos: int;
+        maxOutputLen = high(int) - 16)</a></li>
 
 </ul>
 
@@ -91,13 +93,14 @@
   <dl class="item">
     <div id="inflate-procs-all">
   <div id="inflate,string,ptr.UncheckedArray[uint8],int,int">
-  <dt><pre><span class="Keyword">proc</span> <a href="#inflate%2Cstring%2Cptr.UncheckedArray%5Buint8%5D%2Cint%2Cint"><span class="Identifier">inflate</span></a><span class="Other">(</span><span class="Identifier">dst</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">src</span><span class="Other">:</span> <span class="Keyword">ptr</span> <span class="Identifier">UncheckedArray</span><span class="Other">[</span><span class="Identifier">uint8</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">len</span><span class="Other">,</span> <span class="Identifier">pos</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">)</span> {.
-    <span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ZippyError</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
+  <dt><pre><span class="Keyword">proc</span> <a href="#inflate%2Cstring%2Cptr.UncheckedArray%5Buint8%5D%2Cint%2Cint"><span class="Identifier">inflate</span></a><span class="Other">(</span><span class="Identifier">dst</span><span class="Other">:</span> <span class="Keyword">var</span> <span class="Identifier">string</span><span class="Other">;</span> <span class="Identifier">src</span><span class="Other">:</span> <span class="Keyword">ptr</span> <span class="Identifier">UncheckedArray</span><span class="Other">[</span><span class="Identifier">uint8</span><span class="Other">]</span><span class="Other">;</span> <span class="Identifier">len</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span>
+             <span class="Identifier">pos</span><span class="Other">:</span> <span class="Identifier">int</span><span class="Other">;</span> <span class="Identifier">maxOutputLen</span> <span class="Other">=</span> <span class="Identifier">high</span><span class="Other">(</span><span class="Identifier">int</span><span class="Other">)</span> <span class="Operator">-</span> <span class="DecNumber">16</span><span class="Other">)</span> {.<span><span class="Other pragmadots">...</span></span><span class="pragmawrap"><span class="Identifier">raises</span><span class="Other">:</span> <span class="Other">[</span><span class="Identifier">ZippyError</span><span class="Other">]</span><span class="Other">,</span>
+    <span class="Identifier">tags</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span><span class="Other">,</span> <span class="Identifier">forbids</span><span class="Other">:</span> <span class="Other">[</span><span class="Other">]</span></span>.}</pre></dt>
   <dd>
     
-    
-    <a href="https://github.com/treeform/zippy/tree/master/src/zippy/inflate.nim#L268" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
-<a href="https://github.com/treeform/zippy/edit/devel/src/zippy/inflate.nim#L268" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
+    Bounds actual output, including streams whose declared sizes are incorrect. The decoder reserves at most 13 additional bytes for wide match copies.
+    <a href="https://github.com/treeform/zippy/tree/master/src/zippy/inflate.nim#L275" class="link-seesrc" target="_blank">Source</a>&nbsp;&nbsp;
+<a href="https://github.com/treeform/zippy/edit/devel/src/zippy/inflate.nim#L275" class="link-seesrc" target="_blank" >Edit</a>&nbsp;&nbsp;
 
   </dd>
 </div>
@@ -113,7 +116,7 @@
       <div class="twelve-columns footer">
         <span class="nim-sprite"></span>
         <br>
-        <small style="color: var(--hint);">Made with Nim. Generated: 2026-10-19 23:44:06 UTC</small>
+        <small style="color: var(--hint);">Made with Nim. Generated: 2026-10-19 23:46:09 UTC</small>
       </div>
     </div>
   </div>
