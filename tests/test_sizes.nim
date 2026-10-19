@@ -1,4 +1,4 @@
-import zippy/ziparchives
+import zippy/[inflate, ziparchives]
 
 block:
   # The ZIP declares one byte but actually expands to 4096 bytes.
@@ -8,3 +8,5 @@ block:
   doAssert archive.getFileSize("payload") == archive.extractFile("payload").len
   doAssertRaises(ZippyError):
     discard archive.getFileSize("missing")
+  doAssert inflateSize(nil, 0) == -1
+  doAssert inflateSize(nil, -1) == -1

@@ -96,7 +96,8 @@ proc getFileSize*(
   reader: ZipArchiveReader,
   path: string
 ): int {.raises: [ZippyError].} =
-  ## Scans the actual decoded size without extracting or verifying the CRC.
+  ## Scans the decoded size without extraction or CRC verification.
+  ## Returns -1 for invalid DEFLATE data or size overflow.
   let
     src = cast[ptr UncheckedArray[uint8]](reader.memFile.mem)
     record =
