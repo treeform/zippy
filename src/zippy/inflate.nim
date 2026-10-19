@@ -110,7 +110,7 @@ proc reserveOutput(dst: var string, position, count, limit: int) {.inline.} =
   if required > dst.len:
     dst.setLen(max(required, min(dst.len, (limit + 13) div 2) * 2))
 
-proc inflateBlock(
+proc inflateBlock[Bounded: static bool](
   dst: var string,
   b: var BitStreamReader,
   op: var int,
@@ -187,7 +187,11 @@ proc inflateBlock(
       while true:
         symbol = decodeSymbol(b, literalsHuffman)
         if symbol <= 255 and b.bitsBuffered >= 15:
-          reserveOutput(dst, op, 1, maxOutputLen)
+          when Bounded:
+            reserveOutput(dst, op, 1, maxOutputLen)
+          else:
+            if op >= dst.len:
+              dst.setLen(max(op * 2, 2))
           dst[op] = symbol.char
           inc op
         else:
@@ -199,7 +203,11 @@ proc inflateBlock(
     if b.bitsBuffered < 0:
       failEndOfBuffer()
     if symbol <= 255:
-      reserveOutput(dst, op, 1, maxOutputLen)
+      when Bounded:
+        reserveOutput(dst, op, 1, maxOutputLen)
+      else:
+        if op >= dst.len:
+          dst.setLen(max(op * 2, 2))
       dst[op] = symbol.char
       inc op
     elif symbol == 256:
@@ -232,7 +240,12 @@ proc inflateBlock(
       if distance > op:
         failUncompress()
 
-      reserveOutput(dst, op, copyLength, maxOutputLen)
+      when Bounded:
+        reserveOutput(dst, op, copyLength, maxOutputLen)
+      else:
+        # Min match is 3, so leave room to overwrite by 13.
+        if op + copyLength + 13 > dst.len:
+          dst.setLen((op + copyLength) * 2 + 10) # At least 16.
 
       let dst = cast[ptr UncheckedArray[uint8]](dst[0].addr)
 
@@ -255,7 +268,7 @@ proc inflateBlock(
           remaining -= 8
       op += copyLength
 
-proc inflateNoCompression(
+proc inflateNoCompression[Bounded: static bool](
   dst: var string,
   b: var BitStreamReader,
   op: var int,
@@ -268,21 +281,21 @@ proc inflateNoCompression(
   if len + nlen != 65535:
     failUncompress()
   if len > 0:
-    reserveOutput(dst, op, len, maxOutputLen)
+    when Bounded:
+      reserveOutput(dst, op, len, maxOutputLen)
+    else:
+      dst.setLen(op + len)
     b.readBytes(dst[op].addr, len)
   op += len
 
-proc inflate*(
+proc inflateImpl[Bounded: static bool](
   dst: var string,
   src: ptr UncheckedArray[uint8],
   len: int,
   pos: int,
-  maxOutputLen = int.high - 16
+  maxOutputLen: int
 ) =
-  ## Bounds actual output, including streams whose declared sizes are incorrect.
-  ## The decoder reserves at most 13 additional bytes for wide match copies.
-  if maxOutputLen < 0 or maxOutputLen > int.high - 16:
-    raise newException(ZippyError, "Invalid output limit")
+  ## Decodes with output checks selected at compile time.
   var
     b = BitStreamReader(src: src, len: len, pos: pos)
     op: int
@@ -297,15 +310,36 @@ proc inflate*(
 
     case btype:
     of 0: # No compression
-      inflateNoCompression(dst, b, op, maxOutputLen)
+      inflateNoCompression[Bounded](dst, b, op, maxOutputLen)
     of 1: # Compressed with fixed Huffman codes
-      inflateBlock(dst, b, op, true, maxOutputLen)
+      inflateBlock[Bounded](dst, b, op, true, maxOutputLen)
     of 2: # Compressed with dynamic Huffman codes
-      inflateBlock(dst, b, op, false, maxOutputLen)
+      inflateBlock[Bounded](dst, b, op, false, maxOutputLen)
     else:
       raise newException(ZippyError, "Invalid block header")
 
   dst.setLen(op)
+
+proc inflate*(
+  dst: var string,
+  src: ptr UncheckedArray[uint8],
+  len: int,
+  pos: int
+) =
+  ## Decodes without output-limit checks.
+  inflateImpl[false](dst, src, len, pos, 0)
+
+proc inflate*(
+  dst: var string,
+  src: ptr UncheckedArray[uint8],
+  len: int,
+  pos: int,
+  maxOutputLen: int
+) =
+  ## Bounds decoded bytes, reserving up to 13 extra bytes for match copies.
+  if maxOutputLen < 0 or maxOutputLen > int.high - 16:
+    raise newException(ZippyError, "Invalid output limit")
+  inflateImpl[true](dst, src, len, pos, maxOutputLen)
 
 when defined(release):
   {.pop.}

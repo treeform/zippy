@@ -37,7 +37,9 @@ iterator walkFiles*(reader: ZipArchiveReader): string =
       yield record.path
 
 proc extractFile*(
-  reader: ZipArchiveReader, path: string, maxOutputLen = int.high - 16
+  reader: ZipArchiveReader,
+  path: string,
+  maxOutputLen = int.high - 16
 ): string {.raises: [ZippyError].} =
   ## Limits actual decoded bytes; ZIP size fields are not trusted as a bound.
   if maxOutputLen < 0 or maxOutputLen > int.high - 16:
@@ -90,13 +92,11 @@ proc extractFile*(
         result.setLen(record.compressedSize)
         copyMem(result[0].addr, src[pos].addr, record.compressedSize)
     elif compressionMethod == 8: # Deflate
-      inflate(
-        result,
-        cast[ptr UncheckedArray[uint8]](src[pos].addr),
-        record.compressedSize,
-        0,
-        maxOutputLen
-      )
+      let data = cast[ptr UncheckedArray[uint8]](src[pos].addr)
+      if maxOutputLen == int.high - 16:
+        inflate(result, data, record.compressedSize, 0)
+      else:
+        inflate(result, data, record.compressedSize, 0, maxOutputLen)
     else:
       raise newException(ZippyError, "Unsupported archive, compression method")
   of DirectoryRecord:
