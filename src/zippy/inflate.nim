@@ -101,21 +101,11 @@ proc decodeSymbol(b: var BitStreamReader, h: Huffman): uint16 {.inline.} =
   else: # Slow path
     result = b.decodeSymbolSlow(h)
 
-proc reserveOutput(dst: var string, position, count, limit: int) {.inline.} =
-  ## Checks decoded length before growing the output buffer.
-  if count > limit - position:
-    raise newException(ZippyError, "Uncompressed data exceeds output limit")
-  # Match copies may write up to 13 bytes past their logical end.
-  let required = position + count + 13
-  if required > dst.len:
-    dst.setLen(max(required, min(dst.len, (limit + 13) div 2) * 2))
-
-proc inflateBlock[Bounded: static bool](
+proc inflateBlock(
   dst: var string,
   b: var BitStreamReader,
   op: var int,
-  fixedCodes: bool,
-  maxOutputLen: int
+  fixedCodes: bool
 ) =
   var literalsHuffman, distancesHuffman: Huffman
   if fixedCodes:
@@ -187,11 +177,8 @@ proc inflateBlock[Bounded: static bool](
       while true:
         symbol = decodeSymbol(b, literalsHuffman)
         if symbol <= 255 and b.bitsBuffered >= 15:
-          when Bounded:
-            reserveOutput(dst, op, 1, maxOutputLen)
-          else:
-            if op >= dst.len:
-              dst.setLen(max(op * 2, 2))
+          if op >= dst.len:
+            dst.setLen(max(op * 2, 2))
           dst[op] = symbol.char
           inc op
         else:
@@ -203,11 +190,8 @@ proc inflateBlock[Bounded: static bool](
     if b.bitsBuffered < 0:
       failEndOfBuffer()
     if symbol <= 255:
-      when Bounded:
-        reserveOutput(dst, op, 1, maxOutputLen)
-      else:
-        if op >= dst.len:
-          dst.setLen(max(op * 2, 2))
+      if op >= dst.len:
+        dst.setLen(max(op * 2, 2))
       dst[op] = symbol.char
       inc op
     elif symbol == 256:
@@ -240,12 +224,9 @@ proc inflateBlock[Bounded: static bool](
       if distance > op:
         failUncompress()
 
-      when Bounded:
-        reserveOutput(dst, op, copyLength, maxOutputLen)
-      else:
-        # Min match is 3, so leave room to overwrite by 13.
-        if op + copyLength + 13 > dst.len:
-          dst.setLen((op + copyLength) * 2 + 10) # At least 16.
+      # Min match is 3 so leave room to overwrite by 13
+      if op + copyLength + 13 > dst.len:
+        dst.setLen((op + copyLength) * 2 + 10) # At least 16
 
       let dst = cast[ptr UncheckedArray[uint8]](dst[0].addr)
 
@@ -268,11 +249,10 @@ proc inflateBlock[Bounded: static bool](
           remaining -= 8
       op += copyLength
 
-proc inflateNoCompression[Bounded: static bool](
+proc inflateNoCompression(
   dst: var string,
   b: var BitStreamReader,
-  op: var int,
-  maxOutputLen: int
+  op: var int
 ) =
   b.skipRemainingBitsInCurrentByte()
   let
@@ -281,21 +261,11 @@ proc inflateNoCompression[Bounded: static bool](
   if len + nlen != 65535:
     failUncompress()
   if len > 0:
-    when Bounded:
-      reserveOutput(dst, op, len, maxOutputLen)
-    else:
-      dst.setLen(op + len)
+    dst.setLen(op + len) # Make room for the bytes to be copied to
     b.readBytes(dst[op].addr, len)
   op += len
 
-proc inflateImpl[Bounded: static bool](
-  dst: var string,
-  src: ptr UncheckedArray[uint8],
-  len: int,
-  pos: int,
-  maxOutputLen: int
-) =
-  ## Decodes with output checks selected at compile time.
+proc inflate*(dst: var string, src: ptr UncheckedArray[uint8], len, pos: int) =
   var
     b = BitStreamReader(src: src, len: len, pos: pos)
     op: int
@@ -310,36 +280,155 @@ proc inflateImpl[Bounded: static bool](
 
     case btype:
     of 0: # No compression
-      inflateNoCompression[Bounded](dst, b, op, maxOutputLen)
+      inflateNoCompression(dst, b, op)
     of 1: # Compressed with fixed Huffman codes
-      inflateBlock[Bounded](dst, b, op, true, maxOutputLen)
+      inflateBlock(dst, b, op, true)
     of 2: # Compressed with dynamic Huffman codes
-      inflateBlock[Bounded](dst, b, op, false, maxOutputLen)
+      inflateBlock(dst, b, op, false)
     else:
       raise newException(ZippyError, "Invalid block header")
 
   dst.setLen(op)
 
-proc inflate*(
-  dst: var string,
+proc inflateSize*(
   src: ptr UncheckedArray[uint8],
-  len: int,
-  pos: int
-) =
-  ## Decodes without output-limit checks.
-  inflateImpl[false](dst, src, len, pos, 0)
+  len: int
+): int =
+  ## Counts decoded bytes without allocating output or checking a checksum.
+  if len < 0 or (src == nil and len > 0):
+    raise newException(ZippyError, "Invalid size scan arguments")
+  var b = BitStreamReader(src: src, len: len)
+  while true:
+    let
+      finalBlock = b.readBits(1) != 0
+      kind = b.readBits(2)
+    if b.bitsBuffered < 0:
+      failEndOfBuffer()
+    case kind
+    of 0:
+      b.skipRemainingBitsInCurrentByte()
+      let
+        count = b.readBits(16).int
+        complement = b.readBits(16).int
+      if b.bitsBuffered < 0:
+        failEndOfBuffer()
+      if count + complement != 65535:
+        failUncompress()
+      let start = b.pos - b.bitsBuffered div 8
+      if count > b.len - start:
+        failEndOfBuffer()
+      if count > int.high - result:
+        raise newException(ZippyError, "Uncompressed size overflows int")
+      result += count
+      b.pos = start + count
+      b.bitsBuffered = 0
+      b.bitBuffer = 0
+    of 1, 2:
+      var literalsHuffman, distancesHuffman: Huffman
+      if kind == 1:
+        literalsHuffman = initHuffman(fixedLitLenCodeLengths)
+        distancesHuffman = initHuffman(fixedDistanceCodeLengths)
+      else:
+        let
+          hlit = b.readBits(5).int + 257
+          hdist = b.readBits(5).int + 1
+          hclen = b.readBits(4).int + 4
 
-proc inflate*(
-  dst: var string,
-  src: ptr UncheckedArray[uint8],
-  len: int,
-  pos: int,
-  maxOutputLen: int
-) =
-  ## Bounds decoded bytes, reserving up to 13 extra bytes for match copies.
-  if maxOutputLen < 0 or maxOutputLen > int.high - 16:
-    raise newException(ZippyError, "Invalid output limit")
-  inflateImpl[true](dst, src, len, pos, maxOutputLen)
+        if b.bitsBuffered < 0:
+          failEndOfBuffer()
+        if hlit > maxLitLenCodes:
+          failUncompress()
+
+        if hdist > maxDistanceCodes:
+          failUncompress()
+
+        var clcls: array[19, uint8]
+        for i in 0 ..< hclen:
+          clcls[clclOrder[i]] = b.readBits(3).uint8
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+
+        let clclsHuffman = initHuffman(clcls)
+
+        # Literal and distance lengths form one sequence (RFC 1951).
+
+        var
+          unpacked: array[320, uint8]
+          i: int
+        while i != hlit + hdist:
+          if b.bitsBuffered < 15:
+            b.fillBitBuffer()
+          let symbol = decodeSymbol(b, clclsHuffman)
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          if symbol <= 15:
+            unpacked[i] = symbol.uint8
+            inc i
+          elif symbol == 16:
+            if i == 0:
+              failUncompress()
+            let
+              prev = unpacked[i - 1]
+              repeatCount = b.readBits(2).int + 3
+            if i + repeatCount > unpacked.len:
+              failUncompress()
+            for _ in 0 ..< repeatCount:
+              unpacked[i] = prev
+              inc i
+          elif symbol == 17:
+            let repeatZeroCount = b.readBits(3).int + 3
+            i += repeatZeroCount
+          elif symbol == 18:
+            let repeatZeroCount = b.readBits(7).int + 11
+            i += repeatZeroCount
+          else:
+            raise newException(ZippyError, "Invalid symbol")
+
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          if i > hlit + hdist:
+            failUncompress()
+
+        literalsHuffman = initHuffman(unpacked.toOpenArray(0, hlit - 1))
+        distancesHuffman = initHuffman(unpacked.toOpenArray(hlit, hlit + hdist - 1))
+      while true:
+        if b.bitsBuffered < 15:
+          b.fillBitBuffer()
+        let symbol = decodeSymbol(b, literalsHuffman)
+        if b.bitsBuffered < 0:
+          failEndOfBuffer()
+        var count = 1
+        if symbol == 256:
+          break
+        if symbol > 256:
+          let index = (symbol - 257).int
+          if index >= baseLengths.len:
+            failUncompress()
+          b.fillBitBuffer()
+          count = baseLengths[index].int +
+            b.readBits(baseLengthsExtraBits[index].int, false).int
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          let distanceIndex = decodeSymbol(b, distancesHuffman).int
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          if distanceIndex >= baseDistances.len:
+            failUncompress()
+          if b.bitsBuffered < 13:
+            b.fillBitBuffer()
+          let distance = baseDistances[distanceIndex].int +
+            b.readBits(baseDistanceExtraBits[distanceIndex].int, false).int
+          if b.bitsBuffered < 0:
+            failEndOfBuffer()
+          if distance > result:
+            failUncompress()
+        if count > int.high - result:
+          raise newException(ZippyError, "Uncompressed size overflows int")
+        result += count
+    else:
+      raise newException(ZippyError, "Invalid block header")
+    if finalBlock:
+      break
 
 when defined(release):
   {.pop.}

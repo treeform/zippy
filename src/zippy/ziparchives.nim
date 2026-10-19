@@ -37,13 +37,9 @@ iterator walkFiles*(reader: ZipArchiveReader): string =
       yield record.path
 
 proc extractFile*(
-  reader: ZipArchiveReader,
-  path: string,
-  maxOutputLen = int.high - 16
+  reader: ZipArchiveReader, path: string
 ): string {.raises: [ZippyError].} =
-  ## Limits actual decoded bytes; ZIP size fields are not trusted as a bound.
-  if maxOutputLen < 0 or maxOutputLen > int.high - 16:
-    raise newException(ZippyError, "Invalid output limit")
+
   template failNoFileRecord() =
     raise newException(ZippyError, "No file record found for " & path)
 
@@ -54,9 +50,6 @@ proc extractFile*(
         reader.records[path]
       except KeyError:
         failNoFileRecord()
-
-  if record.uncompressedSize > maxOutputLen:
-    raise newException(ZippyError, "Uncompressed data exceeds output limit")
 
   var pos = record.fileHeaderOffset
 
@@ -86,17 +79,11 @@ proc extractFile*(
   case record.kind:
   of FileRecord:
     if compressionMethod == 0: # No compression
-      if record.compressedSize > maxOutputLen:
-        raise newException(ZippyError, "Uncompressed data exceeds output limit")
       if record.compressedSize > 0:
         result.setLen(record.compressedSize)
         copyMem(result[0].addr, src[pos].addr, record.compressedSize)
     elif compressionMethod == 8: # Deflate
-      let data = cast[ptr UncheckedArray[uint8]](src[pos].addr)
-      if maxOutputLen == int.high - 16:
-        inflate(result, data, record.compressedSize, 0)
-      else:
-        inflate(result, data, record.compressedSize, 0, maxOutputLen)
+      result = uncompress(src[pos].addr, record.compressedSize, dfDeflate)
     else:
       raise newException(ZippyError, "Unsupported archive, compression method")
   of DirectoryRecord:
@@ -104,6 +91,44 @@ proc extractFile*(
 
   if crc32(result) != record.uncompressedCrc32:
     raise newException(ZippyError, "Verifying crc32 failed")
+
+proc getFileSize*(
+  reader: ZipArchiveReader,
+  path: string
+): int {.raises: [ZippyError].} =
+  ## Scans the actual decoded size without extracting or verifying the CRC.
+  let
+    src = cast[ptr UncheckedArray[uint8]](reader.memFile.mem)
+    record =
+      try:
+        reader.records[path]
+      except KeyError:
+        raise newException(ZippyError, "No file record found for " & path)
+  if record.kind != FileRecord:
+    raise newException(ZippyError, "No file record found for " & path)
+  var pos = record.fileHeaderOffset
+  if pos > reader.memFile.size - fileHeaderLen:
+    failArchiveEOF()
+  if read32(src, pos) != fileHeaderSignature:
+    raise newException(ZippyError, "Invalid file header")
+  let
+    compressionMethod = read16(src, pos + 8)
+    fileNameLen = read16(src, pos + 26).int
+    extraFieldLen = read16(src, pos + 28).int
+  pos += fileHeaderLen + fileNameLen + extraFieldLen
+  if pos > reader.memFile.size or
+    record.compressedSize > reader.memFile.size - pos:
+      failArchiveEOF()
+  case compressionMethod
+  of 0:
+    result = record.compressedSize
+  of 8:
+    result = inflateSize(
+      cast[ptr UncheckedArray[uint8]](src[pos].addr),
+      record.compressedSize
+    )
+  else:
+    raise newException(ZippyError, "Unsupported archive, compression method")
 
 proc close*(reader: ZipArchiveReader) {.raises: [OSError].} =
   reader.memFile.close()

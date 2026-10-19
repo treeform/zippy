@@ -1,1 +1,1 @@
-import test, test_huffman_lengths, test_known_bad, test_levels, test_tarballs_read, test_ziparchives_read, test_ziparchives_write, test_output_limits
+import test, test_huffman_lengths, test_known_bad, test_levels, test_tarballs_read, test_ziparchives_read, test_ziparchives_write, test_sizes
